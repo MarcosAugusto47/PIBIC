@@ -1,0 +1,460 @@
+---
+title: "Untitled"
+author: "Marcos Augusto Daza Barbosa"
+date: "16/05/2020"
+output: html_document
+---
+
+# Resolução - Abordagens - Tarefa Final
+```{r, setup, include = FALSE}
+knitr::opts_knit$set(root.dir = "C:\\Users\\marco\\Desktop\\Estatistica\\PIBIC\\pibic_github")
+```
+
+### Aumenta-se a memória para 30000 Mb
+```{r}
+memory.size(max = 30000)
+```
+### Carrega-se alguns pacotes
+```{r}
+library(knitr)
+library(Mcomp)
+library(forecast)
+library(parallel)
+library(doParallel)
+library(foreach)
+library(uroot)
+```
+
+### Importação de objetos e funções
+```{r}
+files = c('ind_month', 'ind_quart', 'ind_year', 'ind_other')
+r = lapply(files, readRDS)
+names(r) = files
+for (i in 1:length(r)){
+  assign(names(r)[i], r[[i]])
+}
+rm(list = c('files', 'r', 'i'))
+```
+
+### Definição da função que ajusta o modelo
+```{r}
+M3 = M3
+n = length(M3)
+
+prep_auto = function(j, M) { # iteração j e lista M formada por ts's
+  
+  ST = M[[j]] # objeto série temporal j
+  mod = auto.arima(ST$x) # modelo auto.arima de ST, aicc  
+  #mod = auto.arima(ST$x, ic = 'aic') # aic               
+  #mod = auto.arima(ST$x, ic = 'bic') # bic               
+  #mod = auto.arima(ST$x, test = 'adf')                   
+  #mod = auto.arima(ST$x, test = 'pp')                      
+  #mod = auto.arima(ST$x, seasonal.test = 'ocsb') 
+  #mod = auto.arima(ST$x, seasonal.test = 'hegy')
+  #mod = auto.arima(ST$x, seasonal.test = 'ch')
+  #mod = auto.arima(ST$x, lambda = 'auto')
+  
+  if (ST$period == 'YEARLY'){
+    m = 1
+    pred_year = forecast(mod,6)[[4]] # Point Forecast
+    obs_year = ST$xx
+    
+    xi_year = ST$x[(m+1):length(ST$x)]
+    xi_m_year = ST$x[1:(length(ST$x) - m)]
+    
+    return(list(pred_year, obs_year, xi_year, xi_m_year))
+      }
+  
+  else if (ST$period == 'QUARTERLY'){
+    m = 4
+    pred_quart = forecast(mod,8)[[4]]
+    obs_quart = ST$xx
+    
+    xi_quart = ST$x[(m+1):length(ST$x)]
+    xi_m_quart = ST$x[1:(length(ST$x) - m)]
+    
+    return(list(pred_quart, obs_quart, xi_quart, xi_m_quart))
+  }
+  
+  else if (ST$period == 'MONTHLY'){
+    m = 12
+    pred_month = forecast(mod,18)[[4]]
+    obs_month = ST$xx
+    
+    xi_month = ST$x[(m+1):length(ST$x)]
+    xi_m_month = ST$x[1:(length(ST$x) - m)]
+    
+    return(list(pred_month, obs_month, xi_month, xi_m_month)) 
+  }
+  
+  else if (ST$period == 'OTHER'){
+    m = 1
+    pred_other = forecast(mod,8)[[4]]
+    obs_other = ST$xx
+    
+    xi_other = ST$x[(m+1):length(ST$x)]
+    xi_m_other = ST$x[1:(length(ST$x) - m)]
+    
+    return(list(pred_other, obs_other, xi_other, xi_m_other))
+  }
+}
+```
+
+### Ajuste do modelo, em paralelo
+```{r, eval = FALSE}
+n.cores <- detectCores() - 2
+registerDoParallel(n.cores)
+writeLines(c(""), "log.txt")
+a = Sys.time()
+resultado = foreach (j = 1:n, .packages = 'forecast') %dopar% {
+    sink()
+    cat(paste("\n","Starting iteration", j, "\n"), file = "log.txt", append = TRUE)
+    prep_auto(j, M3)}
+b = Sys.time(); b-a
+rm(list = c('a','b'))
+stopImplicitCluster()
+
+#saveRDS(resultado, file = "resultado_def", ascii = FALSE, version = NULL)
+#saveRDS(resultado, file = "resultado_aic", ascii = FALSE, version = NULL)
+#saveRDS(resultado, file = "resultado_bic", ascii = FALSE, version = NULL)
+#saveRDS(resultado, file = "resultado_adf", ascii = FALSE, version = NULL)
+#saveRDS(resultado, file = "resultado_pp", ascii = FALSE, version = NULL)
+#saveRDS(resultado, file = "resultado_ocsb", ascii = FALSE, version = NULL)
+#saveRDS(resultado, file = "resultado_hegy", ascii = FALSE, version = NULL)
+#saveRDS(resultado, file = "resultado_ch", ascii = FALSE, version = NULL)
+#saveRDS(resultado, file = "resultado_box_cox", ascii = FALSE, version = NULL)
+#escolher qual resultado para fazer análise
+#resultado = readRDS('...') 
+```
+
+### Funções das métricas sMAPE e Mase
+```{r}
+# Métrica sMAPE 
+smape_f = function(mat_obs, mat_pred){
+  200*mean( abs(mat_obs - mat_pred) /
+              ( abs(mat_obs) + abs(mat_pred) ), na.rm = TRUE)
+}
+# Métrica MASE 
+mase_f = function(mat_obs, mat_pred, mat_var){
+  mean( abs(mat_obs - mat_pred) / mat_var, na.rm = TRUE)
+}
+```
+
+### Função que organiza os resultados
+```{r}
+final_res = function(res){
+  mat_obs = matrix(NA, 3003, 18)
+  mat_pred = matrix(NA, 3003, 18)
+  den = c(rep(0, 3003))
+  mat_var = matrix(NA, 3003, 18)
+  for (i in 1:n) {
+    mat_obs[i,] = c(unlist(res[[i]][2]), rep(NA, 18 - length(unlist(res[[i]][2]))))
+    mat_pred[i,] = c(unlist(res[[i]][1]), rep(NA, 18 - length(unlist(res[[i]][1]))))
+    den[i] = mean(abs(unlist(res[[i]][3]) - unlist(res[[i]][4])), na.rm = TRUE)
+    l = length(unlist(res[[i]][1]))
+    mat_var[i,] = c(rep(den[i], l), rep(NA, 18 - l))
+  }
+  
+  mat_rel_smape = matrix(NA, 1, 5)
+  mat_rel_mase = matrix(NA, 1, 5)
+  colnames(mat_rel_smape) = c('Year', 'Quarter', 'Month', 'Other', 'All')
+  colnames(mat_rel_mase) = c('Year', 'Quarter', 'Month', 'Other', 'All')
+  per_list = list(ind_year, ind_quart, ind_month, ind_other, c(1:n))
+  
+  for (j in 1:5) {
+    mat_rel_smape[,j] = c(smape_f(mat_obs[per_list[[j]],], mat_pred[per_list[[j]],]))
+    mat_rel_mase[,j] = c(mase_f(mat_obs[per_list[[j]],],
+                                mat_pred[per_list[[j]],],
+                                mat_var[per_list[[j]],]))
+  }
+  return(list(mat_rel_smape, mat_rel_mase))
+}
+#final_res(resultado)
+```
+
+### Retirar valores extremos das séries e ajuste
+```{r, eval = FALSE}
+# resultado_def
+M3_copy = M3
+
+# Função de busca de valores extremos e os substitui
+modify = function(j){
+  mod = auto.arima(M3_copy[[j]]$x)
+  res = residuals(mod)
+  x_bar = mean(res) #usar valores absolutos de resíduos?
+  dv = sd(res)
+  for (i in 1:length(res)) {
+    if (abs(res[i] - x_bar) > 3*dv){M3_copy[[j]]$x[i] = fitted(mod)[i]}
+  }
+  return(M3_copy[[j]]$x)
+}
+# olhar como exemplo a série 30
+
+# Aplicação da função na M3_copy
+registerDoParallel(n.cores)
+writeLines(c(""), "log.txt")
+a = Sys.time()
+box = foreach (j = 1:n, .packages = 'forecast', .export = c('M3_copy')) %dopar% {
+                       sink()
+                       cat(paste("\n","Starting iteration",j,"\n"), file="log.txt", append=TRUE)
+                       modify(j)}
+b = Sys.time(); b-a
+rm(list = c('a','b'))
+stopImplicitCluster()
+
+#saveRDS(box, file = "box_def", ascii = FALSE, version = NULL)
+#box_def = readRDS('box_def')
+box_def = box
+for (i in 1:n) {
+  M3_copy[[i]]$x = box_def[[i]]
+}
+
+# Reajuste
+registerDoParallel(n.cores)
+writeLines(c(""), "log.txt")
+a = Sys.time()
+resultado2 = foreach (j = 1:n, .packages = 'forecast') %dopar% {
+                       sink()
+                       cat(paste("\n","Starting iteration",j,"\n"), file = "log.txt", append=TRUE)
+                       prep_auto(j, M3_copy)}
+b = Sys.time(); b-a
+rm(list = c('a','b'))
+stopImplicitCluster()
+
+#saveRDS(resultado2, file = "resultado2_def", ascii = FALSE, version = NULL)
+#resultado2 = readRDS('resultado2_def')
+final_res(resultado2)
+```
+
+### Decomposição, previsão e recomposição - A - Por Adição
+```{r, eval = FALSE}
+prep_auto_add = function(j, M) { # iteração j e lista M formada por ts's
+  
+  ST = M[[j]] # objeto série temporal j
+  
+  if (ST$period == 'YEARLY'){
+    mod = auto.arima(ST$x)
+    m = 1
+    pred_year = forecast(mod,6)[[4]]
+    obs_year = ST$xx
+    
+    xi_year = ST$x[(m+1):length(ST$x)]
+    xi_m_year = ST$x[1:(length(ST$x) - m)]
+    
+    return(list(pred_year, obs_year, xi_year, xi_m_year))
+      }
+  
+  else if (ST$period == 'QUARTERLY'){
+    dec_add = decompose(ST$x, type = 'additive')
+    y_decomp = ST$x - dec_add$seasonal
+    mod = auto.arima(y_decomp)
+    pred_quart = forecast(mod,8)[[4]] + snaive(dec_add$seasonal, h = 8)$mean
+    obs_quart = ST$xx
+    
+    m = 4
+    xi_quart = ST$x[(m+1):length(ST$x)]
+    xi_m_quart = ST$x[1:(length(ST$x) - m)]
+    
+    return(list(pred_quart, obs_quart, xi_quart, xi_m_quart))
+  }
+  
+  else if (ST$period == 'MONTHLY'){
+    dec_add = decompose(ST$x, type = 'additive')
+    y_decomp = ST$x - dec_add$seasonal
+    mod = auto.arima(y_decomp)
+    pred_month = forecast(mod,18)[[4]] + snaive(dec_add$seasonal, h = 18)$mean
+    obs_month = ST$xx
+    
+    m = 12
+    xi_month = ST$x[(m+1):length(ST$x)]
+    xi_m_month = ST$x[1:(length(ST$x) - m)]
+    
+    return(list(pred_month, obs_month, xi_month, xi_m_month)) 
+  }
+  
+  else if (ST$period == 'OTHER'){
+    mod = auto.arima(ST$x)
+    m = 1
+    pred_other = forecast(mod,8)[[4]]
+    obs_other = ST$xx
+    
+    xi_other = ST$x[(m+1):length(ST$x)]
+    xi_m_other = ST$x[1:(length(ST$x) - m)]
+    
+    return(list(pred_other, obs_other, xi_other, xi_m_other))
+  }
+}
+
+n.cores <- detectCores() - 2
+registerDoParallel(n.cores)
+writeLines(c(""), "log.txt")
+a = Sys.time()
+resultado_add_new = foreach (j = 1:n, .packages = 'forecast') %dopar% {
+    sink()
+    cat(paste("\n","Starting iteration",j,"\n"), file = "log.txt", append=TRUE)
+    prep_auto_add(j, M3)}
+b = Sys.time(); b-a
+rm(list = c('a','b'))
+stopImplicitCluster()
+
+#saveRDS(resultado_add_new, file = "resultado_add_new", ascii = FALSE, version = NULL)
+#resultado_add_new = readRDS("resultado_add_new")
+#final_res(resultado_add_new)
+```
+
+### Decomposição, previsão e recomposição - B - Por Multiplicação
+```{r, eval = FALSE}
+M3 = M3
+n = length(M3)
+
+prep_auto_mult = function(j, M) { # iteração j e lista M formada por ts's
+  
+  ST = M[[j]] # objeto série temporal j
+  
+  if (ST$period == 'YEARLY'){
+    mod = auto.arima(ST$x)
+    m = 1
+    pred_year = forecast(mod,6)[[4]]
+    obs_year = ST$xx
+    
+    xi_year = ST$x[(m+1):length(ST$x)]
+    xi_m_year = ST$x[1:(length(ST$x) - m)]
+    
+    return(list(pred_year, obs_year, xi_year, xi_m_year))
+      }
+  
+  else if (ST$period == 'QUARTERLY'){
+    dec_add = decompose(ST$x, type = 'multiplicative')
+    y_decomp = ST$x/dec_add$seasonal
+    mod = auto.arima(y_decomp)
+    pred_quart = forecast(mod,8)[[4]]*snaive(dec_add$seasonal, h = 8)$mean
+    obs_quart = ST$xx
+    
+    m = 4
+    xi_quart = ST$x[(m+1):length(ST$x)]
+    xi_m_quart = ST$x[1:(length(ST$x) - m)]
+    
+    return(list(pred_quart, obs_quart, xi_quart, xi_m_quart))
+  }
+  
+  else if (ST$period == 'MONTHLY'){
+    dec_add = decompose(ST$x, type = 'multiplicative')
+    y_decomp = ST$x / dec_add$seasonal
+    mod = auto.arima(y_decomp)
+    pred_month = forecast(mod,18)[[4]]*snaive(dec_add$seasonal, h = 18)$mean
+    obs_month = ST$xx
+    
+    m = 12
+    xi_month = ST$x[(m+1):length(ST$x)]
+    xi_m_month = ST$x[1:(length(ST$x) - m)]
+    
+    return(list(pred_month, obs_month, xi_month, xi_m_month)) 
+  }
+  
+  else if (ST$period == 'OTHER'){
+    mod = auto.arima(ST$x)
+    m = 1
+    pred_other = forecast(mod,8)[[4]]
+    obs_other = ST$xx
+    
+    xi_other = ST$x[(m+1):length(ST$x)]
+    xi_m_other = ST$x[1:(length(ST$x) - m)]
+    
+    return(list(pred_other, obs_other, xi_other, xi_m_other))
+  }
+}
+
+n.cores <- detectCores() - 2
+registerDoParallel(n.cores)
+writeLines(c(""), "log.txt")
+a = Sys.time()
+resultado_mult_new = foreach (j = 1:n, .packages = 'forecast') %dopar% {
+    sink()
+    cat(paste("\n","Starting iteration",j,"\n"), file = "log.txt", append=TRUE)
+    prep_auto_mult(j, M3)}
+b = Sys.time(); b-a
+rm(list = c('a','b'))
+stopImplicitCluster()
+
+#saveRDS(resultado_mult_new, file = "resultado_mult_new", ascii = FALSE, version = NULL)
+#resultado_mult_new = readRDS("resultado_mult_new")
+#final_res(resultado_mult_new)
+```
+
+
+### Decomposição, previsão e recomposição - C - Por Seasonal and Trend Loess
+```{r, eval = FALSE}
+prep_auto_stl = function(j, M) { # iteração j e lista M formada por ts's
+  
+  ST = M[[j]] # objeto série temporal j
+  
+  if (ST$period == 'YEARLY'){
+    mod = auto.arima(ST$x)
+    m = 1
+    pred_year = forecast(mod,6)[[4]]
+    obs_year = ST$xx
+    
+    xi_year = ST$x[(m+1):length(ST$x)]
+    xi_m_year = ST$x[1:(length(ST$x) - m)]
+    
+    return(list(pred_year, obs_year, xi_year, xi_m_year))
+      }
+  
+  else if (ST$period == 'QUARTERLY'){
+    dec_stl = stl(ST$x, s.window = 11, robust = TRUE)
+    y_decomp = ST$x - dec_stl$time.series[,1]
+    mod = auto.arima(y_decomp)
+    pred_quart = forecast(mod,8)[[4]] + snaive(dec_stl$time.series[,1], h = 8)$mean
+    obs_quart = ST$xx
+    
+    m = 4
+    xi_quart = ST$x[(m+1):length(ST$x)]
+    xi_m_quart = ST$x[1:(length(ST$x) - m)]
+    
+    return(list(pred_quart, obs_quart, xi_quart, xi_m_quart))
+  }
+  
+  else if (ST$period == 'MONTHLY'){
+    dec_stl = stl(ST$x, s.window = 11, robust = TRUE)
+    y_decomp = ST$x - dec_stl$time.series[,1]
+    mod = auto.arima(y_decomp)
+    pred_month = forecast(mod,18)[[4]] + snaive(dec_stl$time.series[,1], h = 18)$mean
+    obs_month = ST$xx
+    
+    m = 12
+    xi_month = ST$x[(m+1):length(ST$x)]
+    xi_m_month = ST$x[1:(length(ST$x) - m)]
+    
+    return(list(pred_month, obs_month, xi_month, xi_m_month)) 
+  }
+  
+  else if (ST$period == 'OTHER'){
+    mod = auto.arima(ST$x)
+    m = 1
+    pred_other = forecast(mod,8)[[4]]
+    obs_other = ST$xx
+    
+    xi_other = ST$x[(m+1):length(ST$x)]
+    xi_m_other = ST$x[1:(length(ST$x) - m)]
+    
+    return(list(pred_other, obs_other, xi_other, xi_m_other))
+  }
+}
+
+n.cores = detectCores() - 2
+registerDoParallel(n.cores)
+writeLines(c(""), "log.txt")
+a = Sys.time()
+resultado_stl_new = foreach (j = 1:n,
+                     .packages = 'forecast') %dopar% {
+                       sink()
+                       cat(paste("\n","Starting iteration",j,"\n"),
+                           file="log.txt", append=TRUE)
+                       prep_auto_stl(j, M3)}
+b = Sys.time(); b-a
+rm(list = c('a','b'))
+stopImplicitCluster()
+#saveRDS(resultado_stl_new, file = "resultado_stl_new", ascii = FALSE, version = NULL)
+#resultado_stl_new = readRDS('resultado_stl_new')
+#final_res(resultado_stl_new)
+```
